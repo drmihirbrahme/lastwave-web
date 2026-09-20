@@ -3,11 +3,12 @@ import vm from 'vm';
 import { Track, Album, Artist } from './types';
 
 // Ensure custom evaluator is configured for deciphering YouTube streaming signatures
-Platform.shim.eval = (data: { output: string }, env: Record<string, unknown>) => {
+Platform.shim.eval = (code: any, env: any) => {
   try {
-    const keys = Object.keys(env);
-    const values = Object.values(env);
-    const wrappedCode = `(function(${keys.join(',')}) { ${data.output} })(${values.map(v => JSON.stringify(v)).join(',')})`;
+    const rawCode = typeof code === 'string' ? code : code?.output || '';
+    const keys = Object.keys(env || {});
+    const values = Object.values(env || {});
+    const wrappedCode = `(function(${keys.join(',')}) { ${rawCode} })(${values.map(v => JSON.stringify(v)).join(',')})`;
     return vm.runInNewContext(wrappedCode);
   } catch (err) {
     console.error('InnerTube VM decipher error:', err);

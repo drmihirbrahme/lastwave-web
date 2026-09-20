@@ -299,11 +299,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     hasScrobbledRef.current = false;
     trackStartTimeRef.current = Date.now();
 
-    // Check if liked
-    const liked = await isTrackLiked(track.id);
-    setIsLiked(liked);
-
-    // Update queue state
+    // Update queue state immediately
     if (newQueue) {
       setQueue(newQueue);
       setQueueIndex(index !== undefined ? index : newQueue.findIndex((t) => t.id === track.id));
@@ -315,46 +311,35 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setCurrentTrack(track);
     updateMediaSession(track);
     addToHistory(track);
-    loadLyrics(track);
-    triggerLastFmNowPlaying(track);
 
+    // Synchronously assign streaming proxy audio source & trigger playback to preserve iOS user gesture context
+    const streamProxyUrl = `/api/stream/audio?id=${encodeURIComponent(track.id)}`;
+    
     try {
-      // 1. Check local IndexedDB offline cache first
-      let playableUrl = track.streamUrl;
+      // Check offline cache first if available
       const cachedBlob = await getCachedTrackAudio(track.id);
-
       if (cachedBlob) {
-        playableUrl = URL.createObjectURL(cachedBlob);
-      } else if (!playableUrl) {
-        // 2. Fetch fresh deciphered stream URL from server
-        const res = await fetch(`/api/stream?id=${encodeURIComponent(track.id)}`);
-        if (!res.ok) {
-          throw new Error('Failed to resolve stream URL');
-        }
-        const streamData = await res.json();
-        playableUrl = streamData.url;
-
-        // Auto-cache for offline if enabled in settings
-        const settings = await getAppSettings();
-        if (settings.cacheStreamForOffline && playableUrl) {
-          fetch(playableUrl)
-            .then((r) => r.blob())
-            .then((blob) => cacheTrackAudio(track.id, blob))
-            .catch(() => {});
-        }
+        audioRef.current.src = URL.createObjectURL(cachedBlob);
+      } else {
+        audioRef.current.src = streamProxyUrl;
       }
-
-      if (!playableUrl) throw new Error('No stream URL available');
-
-      audioRef.current.src = playableUrl;
-      await audioRef.current.play();
+      
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+        await playPromise;
+      }
       setIsPlaying(true);
     } catch (error) {
-      console.error('Audio playback error:', error);
+      console.error('Audio playback start error:', error);
       setIsPlaying(false);
     } finally {
       setIsLoading(false);
     }
+
+    // Load lyrics and Last.fm in the background without blocking audio startup
+    loadLyrics(track);
+    triggerLastFmNowPlaying(track);
+    isTrackLiked(track.id).then(setIsLiked);
   };
 
   const togglePlay = () => {

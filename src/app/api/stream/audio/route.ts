@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getInnertube } from '@/lib/youtube';
+import { getDirectAudioUrl, createProxiedRequest, isTorRunning } from '@/lib/stream-extractor';
+import { Readable } from 'stream';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -13,63 +14,37 @@ export async function GET(req: NextRequest) {
       return new NextResponse('Missing video ID', { status: 400 });
     }
 
+    const videoId = id.trim();
     const rangeHeader = req.headers.get('range') || 'bytes=0-';
 
-    const yt = await getInnertube();
-    const info = await yt.music.getInfo(id.trim());
+    const { url: streamUrl, mimeType } = await getDirectAudioUrl(videoId);
+    const torActive = await isTorRunning();
 
-    const format = await info.chooseFormat({
-      type: 'audio',
-      quality: 'best',
-    });
-
-    if (!format) {
-      return new NextResponse('Audio format not found', { status: 404 });
-    }
-
-    let directUrl = format.url;
-    if (!directUrl && format.decipher) {
-      directUrl = await format.decipher(yt.session.player);
-    }
-
-    if (!directUrl) {
-      return new NextResponse('Failed to resolve deciphered audio URL', { status: 500 });
-    }
-
-    // Forward range request to Google Video CDN
-    const upstreamRes = await fetch(directUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Range': rangeHeader,
-        'Accept': '*/*',
-        'Accept-Encoding': 'identity',
-      },
-    });
-
-    if (!upstreamRes.ok && upstreamRes.status !== 206) {
-      console.error('Upstream audio fetch failed:', upstreamRes.status, upstreamRes.statusText);
-      return new NextResponse('Upstream audio fetch error', { status: upstreamRes.status });
-    }
+    const upstream = await createProxiedRequest(streamUrl, rangeHeader, torActive);
 
     const responseHeaders = new Headers();
-    responseHeaders.set('Content-Type', upstreamRes.headers.get('content-type') || 'audio/mp4');
+    responseHeaders.set('Content-Type', (upstream.headers['content-type'] as string) || mimeType || 'audio/mp4');
     responseHeaders.set('Accept-Ranges', 'bytes');
     responseHeaders.set('Access-Control-Allow-Origin', '*');
     responseHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    responseHeaders.set('Cache-Control', 'public, max-age=3600');
+    responseHeaders.set('Cache-Control', 'public, max-age=7200');
 
-    const contentRange = upstreamRes.headers.get('content-range');
-    const contentLength = upstreamRes.headers.get('content-length');
+    if (upstream.headers['content-range']) {
+      responseHeaders.set('Content-Range', upstream.headers['content-range'] as string);
+    }
+    if (upstream.headers['content-length']) {
+      responseHeaders.set('Content-Length', upstream.headers['content-length'] as string);
+    }
 
-    if (contentRange) responseHeaders.set('Content-Range', contentRange);
-    if (contentLength) responseHeaders.set('Content-Length', contentLength);
+    // Convert Node incoming stream to Web ReadableStream
+    const webStream = Readable.toWeb(upstream.stream) as ReadableStream;
 
-    return new NextResponse(upstreamRes.body, {
-      status: upstreamRes.status,
+    return new NextResponse(webStream, {
+      status: upstream.statusCode === 206 ? 206 : 200,
       headers: responseHeaders,
     });
   } catch (error: any) {
     console.error('Audio streaming proxy error:', error);
-    return new NextResponse(error.message || 'Streaming proxy failure', { status: 500 });
+    return new NextResponse(error.message || 'Streaming failure', { status: 500 });
   }
 }
