@@ -4,6 +4,9 @@
 
 An open-source web application and Progressive Web App (PWA) port inspired by [Clash-Projects/LastWave-native](https://github.com/Clash-Projects/LastWave-native).
 
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fdrmihirbrahme%2Flastwave-web)
+[![Deploy to Netlify](https://www.netlify.com/img/deploy/button.svg)](https://app.netlify.com/start/deploy?repository=https://github.com/drmihirbrahme/lastwave-web)
+
 ---
 
 ## ✨ Features
@@ -21,6 +24,16 @@ An open-source web application and Progressive Web App (PWA) port inspired by [C
 
 ---
 
+## ⚡ 1-Click Deployment (Vercel)
+
+Click the button below to deploy your own instance of LastWave Web directly to Vercel for free:
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fdrmihirbrahme%2Flastwave-web)
+
+Or visit: **[Deploy on Vercel](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fdrmihirbrahme%2Flastwave-web)**
+
+---
+
 ## 🚀 Quick Start (Local Run)
 
 ```bash
@@ -35,22 +48,6 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 1. Ensure your iPhone is connected to the same Wi-Fi as your computer.
 2. Run `npm run dev -- -H 0.0.0.0`
 3. On your iPhone Safari, open `http://<YOUR_LOCAL_IP>:3000` (e.g. `http://192.168.1.50:3000`).
-
----
-
-## 🌐 Free 1-Click Hosting (Vercel or Netlify)
-
-### Option A: Deploy to Vercel (Recommended)
-1. Push this folder to a GitHub repository.
-2. Go to [vercel.com](https://vercel.com) → **Add New Project** → Import your repo.
-3. Framework Preset: **Next.js**.
-4. Click **Deploy**. Vercel will build and assign you a free `https://your-app.vercel.app` URL with HTTPS enabled.
-
-### Option B: Deploy to Netlify
-1. Push this folder to a GitHub repository.
-2. Go to [netlify.com](https://netlify.com) → **Add new site** → Import from Git.
-3. Build command: `npm run build`, Publish directory: `.next`.
-4. Click **Deploy**.
 
 ---
 
