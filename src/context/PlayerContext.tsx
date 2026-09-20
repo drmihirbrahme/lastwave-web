@@ -8,15 +8,9 @@ import {
   toggleLikeTrack,
   isTrackLiked,
   getLastFmConfig,
+  getCachedTrackAudio,
 } from '@/lib/storage';
 import { FastAverageColor } from 'fast-average-color';
-
-declare global {
-  interface Window {
-    YT: any;
-    onYouTubeIframeAPIReady: () => void;
-  }
-}
 
 interface PlayerContextType {
   currentTrack: Track | null;
@@ -35,7 +29,7 @@ interface PlayerContextType {
   accentColor: string;
   isNowPlayingOpen: boolean;
   setIsNowPlayingOpen: (open: boolean) => void;
-  playTrack: (track: Track, newQueue?: Track[], index?: number) => Promise<void>;
+  playTrack: (track: Track, newQueue?: Track[], index?: number) => void;
   togglePlay: () => void;
   seek: (seconds: number) => void;
   playNext: () => void;
@@ -70,139 +64,108 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [accentColor, setAccentColor] = useState<string>('#C6F100');
   const [isNowPlayingOpen, setIsNowPlayingOpen] = useState(false);
 
-  const ytPlayerRef = useRef<any>(null);
-  const isPlayerReadyRef = useRef<boolean>(false);
-  const pendingTrackIdRef = useRef<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const hasScrobbledRef = useRef<boolean>(false);
   const trackStartTimeRef = useRef<number>(0);
   const lastFmConfigRef = useRef<LastFmConfig | null>(null);
 
-  // Initialize YouTube IFrame Player (Device-side routing)
+  // Initialize native HTML5 Audio element and listeners
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    // Load Last.fm configuration
+    const audio = new Audio();
+    audio.preload = 'auto';
+    audio.setAttribute('playsinline', 'true');
+    audio.setAttribute('webkit-playsinline', 'true');
+    audioRef.current = audio;
+
+    // Load Last.fm config from local storage
     getLastFmConfig().then((cfg) => {
       lastFmConfigRef.current = cfg;
     });
 
-    const initYT = () => {
-      if (!window.YT || !window.YT.Player) return;
-      if (ytPlayerRef.current) return;
+    const handleTimeUpdate = () => {
+      const cur = audio.currentTime || 0;
+      const dur = audio.duration || 0;
+      setCurrentTime(cur);
 
-      try {
-        ytPlayerRef.current = new window.YT.Player('yt-device-player', {
-          height: '200',
-          width: '200',
-          videoId: '',
-          playerVars: {
-            autoplay: 1,
-            controls: 0,
-            disablekb: 1,
-            enablejsapi: 1,
-            fs: 0,
-            iv_load_policy: 3,
-            modestbranding: 1,
-            playsinline: 1,
-            rel: 0,
-            showinfo: 0,
-            origin: window.location.origin,
-          },
-          events: {
-            onReady: () => {
-              isPlayerReadyRef.current = true;
-              if (pendingTrackIdRef.current) {
-                ytPlayerRef.current.loadVideoById({
-                  videoId: pendingTrackIdRef.current,
-                  startSeconds: 0,
-                });
-                ytPlayerRef.current.playVideo();
-                pendingTrackIdRef.current = null;
-              }
-            },
-            onStateChange: (event: any) => {
-              // 1 = PLAYING, 2 = PAUSED, 3 = BUFFERING, 0 = ENDED
-              if (event.data === 1) {
-                setIsPlaying(true);
-                setIsLoading(false);
-              } else if (event.data === 2) {
-                setIsPlaying(false);
-              } else if (event.data === 3) {
-                setIsLoading(true);
-              } else if (event.data === 0) {
-                handleTrackEnded();
-              }
-            },
-            onError: (err: any) => {
-              console.warn('Device YouTube player event error:', err);
-              setIsLoading(false);
-              setIsPlaying(false);
-            },
-          },
-        });
-      } catch (err) {
-        console.error('Error initializing YT Player:', err);
+      // Last.fm Scrobble threshold: 50% of track or 4 minutes
+      if (
+        !hasScrobbledRef.current &&
+        dur > 30 &&
+        (cur >= dur / 2 || cur >= 240) &&
+        currentTrack
+      ) {
+        hasScrobbledRef.current = true;
+        triggerLastFmScrobble(currentTrack, trackStartTimeRef.current);
+      }
+
+      // Update Media Session position state on iOS / Desktop
+      if ('mediaSession' in navigator && dur > 0) {
+        try {
+          navigator.mediaSession.setPositionState({
+            duration: dur,
+            playbackRate: audio.playbackRate || 1.0,
+            position: Math.min(cur, dur),
+          });
+        } catch {
+          // ignore MediaSession error
+        }
       }
     };
 
-    if (!window.YT) {
-      const tag = document.createElement('script');
-      tag.src = 'https://www.youtube.com/iframe_api';
-      tag.async = true;
-      const firstScriptTag = document.getElementsByTagName('script')[0];
-      firstScriptTag?.parentNode?.insertBefore(tag, firstScriptTag);
-      window.onYouTubeIframeAPIReady = initYT;
-    } else if (window.YT.loaded) {
-      initYT();
-    } else {
-      window.onYouTubeIframeAPIReady = initYT;
-    }
-  }, []);
-
-  // Time & Position tracking loop
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (!ytPlayerRef.current || !isPlayerReadyRef.current) return;
-      try {
-        if (typeof ytPlayerRef.current.getCurrentTime === 'function') {
-          const cur = ytPlayerRef.current.getCurrentTime() || 0;
-          const dur = ytPlayerRef.current.getDuration() || 0;
-          setCurrentTime(cur);
-          if (dur > 0 && dur !== duration) {
-            setDuration(dur);
-          }
-
-          // Last.fm Scrobble checkpoint (50% or 4 minutes)
-          if (
-            !hasScrobbledRef.current &&
-            dur > 30 &&
-            (cur >= dur / 2 || cur >= 240) &&
-            currentTrack
-          ) {
-            hasScrobbledRef.current = true;
-            triggerLastFmScrobble(currentTrack, trackStartTimeRef.current);
-          }
-
-          // Media Session Position state update
-          if ('mediaSession' in navigator && dur > 0) {
-            try {
-              navigator.mediaSession.setPositionState({
-                duration: dur,
-                playbackRate: 1.0,
-                position: Math.min(cur, dur),
-              });
-            } catch {
-              // ignore MediaSession error
-            }
-          }
-        }
-      } catch {
-        // ignore polling error
+    const handleLoadedMetadata = () => {
+      if (!isNaN(audio.duration) && audio.duration > 0) {
+        setDuration(audio.duration);
       }
-    }, 250);
+    };
 
-    return () => clearInterval(timer);
-  }, [currentTrack, duration]);
+    const handleEnded = () => {
+      if (repeatMode === 'one') {
+        audio.currentTime = 0;
+        audio.play().catch(console.error);
+      } else {
+        playNext();
+      }
+    };
+
+    const handlePlay = () => setIsPlaying(true);
+    const handlePause = () => setIsPlaying(false);
+    const handleWaiting = () => setIsLoading(true);
+    const handlePlaying = () => {
+      setIsLoading(false);
+      setIsPlaying(true);
+    };
+    const handleError = (e: any) => {
+      console.error('HTML5 Audio playback error event:', audio.error || e);
+      setIsLoading(false);
+      setIsPlaying(false);
+    };
+
+    audio.addEventListener('timeupdate', handleTimeUpdate);
+    audio.addEventListener('loadedmetadata', handleLoadedMetadata);
+    audio.addEventListener('durationchange', handleLoadedMetadata);
+    audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('play', handlePlay);
+    audio.addEventListener('pause', handlePause);
+    audio.addEventListener('waiting', handleWaiting);
+    audio.addEventListener('playing', handlePlaying);
+    audio.addEventListener('error', handleError);
+
+    return () => {
+      audio.removeEventListener('timeupdate', handleTimeUpdate);
+      audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      audio.removeEventListener('durationchange', handleLoadedMetadata);
+      audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('play', handlePlay);
+      audio.removeEventListener('pause', handlePause);
+      audio.removeEventListener('waiting', handleWaiting);
+      audio.removeEventListener('playing', handlePlaying);
+      audio.removeEventListener('error', handleError);
+      audio.pause();
+      audio.src = '';
+    };
+  }, [repeatMode, currentTrack]);
 
   // Extract dynamic accent color from album artwork
   useEffect(() => {
@@ -228,7 +191,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
   }, [currentTrack?.coverUrl]);
 
-  // Update Media Session Metadata & Handlers
+  // Update Media Session Metadata & Actions (Lockscreen / Control Center)
   const updateMediaSession = useCallback((track: Track) => {
     if (typeof window === 'undefined' || !('mediaSession' in navigator)) return;
 
@@ -244,14 +207,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     });
 
     navigator.mediaSession.setActionHandler('play', () => {
-      if (ytPlayerRef.current?.playVideo) {
-        ytPlayerRef.current.playVideo();
-      }
+      audioRef.current?.play().catch(console.error);
     });
     navigator.mediaSession.setActionHandler('pause', () => {
-      if (ytPlayerRef.current?.pauseVideo) {
-        ytPlayerRef.current.pauseVideo();
-      }
+      audioRef.current?.pause();
     });
     navigator.mediaSession.setActionHandler('previoustrack', () => {
       playPrevious();
@@ -260,21 +219,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       playNext();
     });
     navigator.mediaSession.setActionHandler('seekto', (details) => {
-      if (details.seekTime !== undefined && ytPlayerRef.current?.seekTo) {
-        ytPlayerRef.current.seekTo(details.seekTime, true);
+      if (details.seekTime !== undefined && audioRef.current) {
+        audioRef.current.currentTime = details.seekTime;
         setCurrentTime(details.seekTime);
       }
     });
     navigator.mediaSession.setActionHandler('seekbackward', () => {
-      if (ytPlayerRef.current?.getCurrentTime) {
-        const cur = ytPlayerRef.current.getCurrentTime();
-        seek(Math.max(0, cur - 10));
+      if (audioRef.current) {
+        audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 10);
       }
     });
     navigator.mediaSession.setActionHandler('seekforward', () => {
-      if (ytPlayerRef.current?.getCurrentTime) {
-        const cur = ytPlayerRef.current.getCurrentTime();
-        seek(cur + 10);
+      if (audioRef.current) {
+        audioRef.current.currentTime = Math.min(
+          audioRef.current.duration || 0,
+          audioRef.current.currentTime + 10
+        );
       }
     });
   }, []);
@@ -349,8 +309,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // Main playback function using Device YouTube IFrame
-  const playTrack = async (track: Track, newQueue?: Track[], index?: number) => {
+  // Main playback function - synchronous user-gesture execution for iOS Safari
+  const playTrack = (track: Track, newQueue?: Track[], index?: number) => {
+    if (!audioRef.current) return;
+
     setIsLoading(true);
     hasScrobbledRef.current = false;
     trackStartTimeRef.current = Date.now();
@@ -370,56 +332,47 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     updateMediaSession(track);
     addToHistory(track);
 
-    // Route request directly from device via YouTube IFrame API
-    try {
-      if (ytPlayerRef.current && isPlayerReadyRef.current && typeof ytPlayerRef.current.loadVideoById === 'function') {
-        ytPlayerRef.current.loadVideoById({
-          videoId: track.id,
-          startSeconds: 0,
+    // Set audio source directly to streaming proxy endpoint and trigger play synchronously
+    const streamUrl = `/api/stream/audio?id=${encodeURIComponent(track.id)}`;
+    
+    // Check local offline cache first synchronously if blob URL is stored
+    audioRef.current.src = streamUrl;
+    audioRef.current.load();
+    const playPromise = audioRef.current.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          setIsPlaying(true);
+          setIsLoading(false);
+        })
+        .catch((err) => {
+          console.error('Audio play error:', err);
+          setIsLoading(false);
+          setIsPlaying(false);
         });
-        ytPlayerRef.current.playVideo();
-      } else {
-        pendingTrackIdRef.current = track.id;
-      }
-      setIsPlaying(true);
-    } catch (err) {
-      console.error('Device YouTube playback error:', err);
-    } finally {
-      setIsLoading(false);
     }
 
-    // Load lyrics and Last.fm in the background
+    // Load lyrics and Last.fm in the background without blocking audio startup
     loadLyrics(track);
     triggerLastFmNowPlaying(track);
     isTrackLiked(track.id).then(setIsLiked);
   };
 
-  const handleTrackEnded = () => {
-    if (repeatMode === 'one' && ytPlayerRef.current?.seekTo) {
-      ytPlayerRef.current.seekTo(0, true);
-      ytPlayerRef.current.playVideo();
-    } else {
-      playNext();
-    }
-  };
-
   const togglePlay = () => {
-    if (!ytPlayerRef.current || !currentTrack) return;
+    if (!audioRef.current || !currentTrack) return;
     if (isPlaying) {
-      ytPlayerRef.current.pauseVideo?.();
+      audioRef.current.pause();
       setIsPlaying(false);
     } else {
-      ytPlayerRef.current.playVideo?.();
+      audioRef.current.play().catch(console.error);
       setIsPlaying(true);
     }
   };
 
   const seek = (seconds: number) => {
-    if (!ytPlayerRef.current) return;
-    const clamped = Math.max(0, Math.min(seconds, duration || seconds));
-    if (typeof ytPlayerRef.current.seekTo === 'function') {
-      ytPlayerRef.current.seekTo(clamped, true);
-    }
+    if (!audioRef.current) return;
+    const clamped = Math.max(0, Math.min(seconds, audioRef.current.duration || seconds));
+    audioRef.current.currentTime = clamped;
     setCurrentTime(clamped);
   };
 
@@ -440,11 +393,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   };
 
   const playPrevious = () => {
-    if (queue.length === 0) return;
+    if (!audioRef.current || queue.length === 0) return;
     // If playing more than 3 seconds, restart current track
-    if (currentTime > 3 && ytPlayerRef.current?.seekTo) {
-      ytPlayerRef.current.seekTo(0, true);
-      setCurrentTime(0);
+    if (audioRef.current.currentTime > 3) {
+      audioRef.current.currentTime = 0;
       return;
     }
     let prevIdx = queueIndex - 1;
@@ -462,10 +414,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   };
 
   const setVolume = (val: number) => {
+    if (!audioRef.current) return;
     const clamped = Math.max(0, Math.min(1, val));
-    if (ytPlayerRef.current?.setVolume) {
-      ytPlayerRef.current.setVolume(Math.round(clamped * 100));
-    }
+    audioRef.current.volume = clamped;
     setVolumeState(clamped);
   };
 
@@ -547,21 +498,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }}
     >
       {children}
-      {/* Device-side YouTube audio player iframe (onscreen active layer for iOS WebKit) */}
-      <div
-        style={{
-          position: 'fixed',
-          bottom: 0,
-          left: 0,
-          width: 200,
-          height: 200,
-          opacity: 0.001,
-          pointerEvents: 'none',
-          zIndex: -1,
-        }}
-      >
-        <div id="yt-device-player" />
-      </div>
     </PlayerContext.Provider>
   );
 }

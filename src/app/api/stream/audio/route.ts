@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDirectAudioUrl, createProxiedRequest, isTorRunning } from '@/lib/stream-extractor';
+import { getDirectAudioUrl, createProxiedRequest } from '@/lib/stream-extractor';
 import { Readable } from 'stream';
 
 export const runtime = 'nodejs';
@@ -18,9 +18,7 @@ export async function GET(req: NextRequest) {
     const rangeHeader = req.headers.get('range') || 'bytes=0-';
 
     const { url: streamUrl, mimeType } = await getDirectAudioUrl(videoId);
-    const torActive = await isTorRunning();
-
-    const upstream = await createProxiedRequest(streamUrl, rangeHeader, torActive);
+    const upstream = await createProxiedRequest(streamUrl, rangeHeader);
 
     const responseHeaders = new Headers();
     responseHeaders.set('Content-Type', (upstream.headers['content-type'] as string) || mimeType || 'audio/mp4');
@@ -36,7 +34,7 @@ export async function GET(req: NextRequest) {
       responseHeaders.set('Content-Length', upstream.headers['content-length'] as string);
     }
 
-    // Convert Node incoming stream to Web ReadableStream
+    // Convert Node stream to Web ReadableStream
     const webStream = Readable.toWeb(upstream.stream) as ReadableStream;
 
     return new NextResponse(webStream, {
@@ -44,7 +42,7 @@ export async function GET(req: NextRequest) {
       headers: responseHeaders,
     });
   } catch (error: any) {
-    console.error('Audio streaming proxy error:', error);
+    console.error('Audio streaming proxy error for id:', req.nextUrl.searchParams.get('id'), error);
     return new NextResponse(error.message || 'Streaming failure', { status: 500 });
   }
 }
